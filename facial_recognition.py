@@ -1,0 +1,153 @@
+import face_recognition
+import cv2
+import numpy as np
+from picamera2 import Picamera2
+import time
+import pickle
+
+print("[INFO] loading encodings...")
+with open("encodings.pickle", "rb") as f:
+    data = pickle.loads(f.read())
+known_face_encodings = data["encodings"]
+known_face_names = data["names"]
+
+picam2 = Picamera2()
+# RGB888: Picamera2 outputs true R,G,B order — we convert to BGR for OpenCV
+picam2.configure(picam2.create_preview_configuration(main={"format": 'RGB888', "size": (1920, 1080)}))
+picam2.start()
+
+cv_scaler = 4
+DISTANCE_THRESHOLD = 0.45  # Lower = stricter match required
+ABSENCE_THRESHOLD  = 1.0   # Seconds gap with no detection = face left the frame
+COOLDOWN_SECONDS   = 10    # If absent >= 10s and returns → decrease counter
+
+face_locations     = []
+face_encodings_list = []
+face_names         = []
+frame_count        = 0
+fps_start_time     = time.time()
+fps                = 0
+
+# Counter
+presence_counter = 0
+
+# last_seen_time[name] — timestamp of the last frame this person was detected
+# Updated every frame they are visible; gap between frames reveals when they left
+last_seen_time = {}
+
+# has_been_counted — names that have already triggered a counter increment
+# A person is counted UP only once, ever (first appearance)
+has_been_counted = set()
+
+
+def process_frame(frame):
+    """Detect faces, match names, update counter with correct logic."""
+    global face_locations, face_encodings_list, face_names, presence_counter
+
+    resized_frame = cv2.resize(frame, (0, 0), fx=(1/cv_scaler), fy=(1/cv_scaler))
+    # frame is RGB888 — face_recognition expects RGB, no conversion needed
+    face_locations = face_recognition.face_locations(resized_frame)
+    face_encodings_list = face_recognition.face_encodings(
+        resized_frame, face_locations, model='large'
+    )
+
+    face_names = []
+    now = time.time()
+
+    for face_encoding in face_encodings_list:
+        name = "Unknown"
+
+        if len(known_face_encodings) > 0:
+            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+            best_match_index = np.argmin(face_distances)
+
+            if face_distances[best_match_index] < DISTANCE_THRESHOLD:
+                name = known_face_names[best_match_index]
+                last_seen = last_seen_time.get(name, None)
+
+                if last_seen is None:
+                    # Very first time this person has ever appeared — count UP (once only)
+                    presence_counter += 1
+                    has_been_counted.add(name)
+                else:
+                    time_absent = now - last_seen
+
+                    if time_absent >= ABSENCE_THRESHOLD:
+                        # Face was genuinely gone and just came back
+                        if time_absent >= COOLDOWN_SECONDS:
+                            # Was absent long enough (>= 20s) — decrease counter
+                            presence_counter = max(0, presence_counter - 1)
+                        # else: came back within 20s — do nothing (ignore brief exits)
+
+                    # else: face was continuously in frame — do nothing
+
+                # Always update last_seen every frame they are visible
+                last_seen_time[name] = now
+
+        face_names.append(name)
+
+    return frame
+
+
+def draw_results(frame):
+    """Draw rectangles: GREEN for recognized, RED for unknown."""
+    for (top, right, bottom, left), name in zip(face_locations, face_names):
+        top    *= cv_scaler
+        right  *= cv_scaler
+        bottom *= cv_scaler
+        left   *= cv_scaler
+
+        color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+
+        cv2.rectangle(frame, (left, top), (right, bottom), color, 3)
+        cv2.rectangle(frame, (left - 3, top - 35), (right + 3, top), color, cv2.FILLED)
+        font = cv2.FONT_HERSHEY_DUPLEX
+        cv2.putText(frame, name, (left + 6, top - 6), font, 1.0, (255, 255, 255), 1)
+
+    return frame
+
+
+def draw_counter(frame):
+    """Draw the presence counter in the top-left corner."""
+    label = f"Passengers: {presence_counter}"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (text_w, text_h), _ = cv2.getTextSize(label, font, 1, 2)
+    cv2.rectangle(frame, (5, 5), (text_w + 25, text_h + 25), (0, 0, 0), cv2.FILLED)
+    cv2.putText(frame, label, (10, text_h + 15), font, 1, (0, 255, 0), 2)
+    return frame
+
+
+def calculate_fps():
+    global frame_count, fps_start_time, fps
+    frame_count += 1
+    elapsed = time.time() - fps_start_time
+    if elapsed > 1:
+        fps = frame_count / elapsed
+        frame_count = 0
+        fps_start_time = time.time()
+    return fps
+
+
+while True:
+    frame = picam2.capture_array()  # RGB888 — true RGB
+
+    processed_frame = process_frame(frame)
+
+    # Convert RGB → BGR for correct OpenCV display colors
+    bgr_frame = cv2.cvtColor(processed_frame, cv2.COLOR_RGB2BGR)
+
+    display_frame = draw_results(bgr_frame)
+    display_frame = draw_counter(display_frame)
+
+    current_fps = calculate_fps()
+    cv2.putText(display_frame, f"FPS: {current_fps:.1f}",
+                (display_frame.shape[1] - 150, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+    cv2.imshow('Video', display_frame)
+
+    if cv2.waitKey(1) == ord("q"):
+        break
+
+cv2.destroyAllWindows()
+picam2.stop()
