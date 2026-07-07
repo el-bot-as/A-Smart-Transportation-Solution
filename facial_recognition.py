@@ -39,6 +39,7 @@ last_seen_time = {}
 # A person is counted UP only once, ever (first appearance)
 has_been_counted = set()
 
+
 def process_frame(frame):
     """Detect faces, match names, update counter with correct logic."""
     global face_locations, face_encodings_list, face_names, presence_counter, last_seen_time
@@ -52,6 +53,7 @@ def process_frame(frame):
     face_names = []
     now = time.time()
     current_frame_seen_names = set()
+    unknown_count_in_frame = 0
 
     # --- STEP 1: Detect and handle boardings ---
     for face_encoding in face_encodings_list:
@@ -67,29 +69,31 @@ def process_frame(frame):
 
                 # If they are not currently marked as on board, they just boarded!
                 if name not in last_seen_time:
-                    presence_counter += 1
-                    print(f"[BOARDING] {name} entered. Passengers: {presence_counter}")
+                    print(f"[BOARDING] Registered passenger {name} entered.")
                 
-                # Update their timestamp keeping them alive on board
+                # Update/Initialize their timestamp keeping them alive on board
                 last_seen_time[name] = now
+
+        if name == "Unknown":
+            unknown_count_in_frame += 1
 
         face_names.append(name)
 
-    # --- STEP 2: Independent check for exits ---
-    # We create a list of people who have been gone longer than the cooldown
+    # --- STEP 2: Independent check for exits (Known Passengers Only) ---
     passengers_who_left = []
-    for name, last_time in last_seen_time.items():
-        # If they aren't in the current frame, check how long they've been missing
-        if name not in current_frame_seen_names:
+    for tracked_name, last_time in last_seen_time.items():
+        if tracked_name not in current_frame_seen_names:
             time_absent = now - last_time
             if time_absent >= COOLDOWN_SECONDS:
-                passengers_who_left.append(name)
+                passengers_who_left.append(tracked_name)
 
-    # Remove those who left from our active tracking and decrement the counter
-    for name in passengers_who_left:
-        del last_seen_time[name]
-        presence_counter = max(0, presence_counter - 1)
-        print(f"[EXIT] {name} left the vehicle. Passengers: {presence_counter}")
+    for tracked_name in passengers_who_left:
+        del last_seen_time[tracked_name]
+        print(f"[EXIT] Registered passenger {tracked_name} left the vehicle.")
+
+    # --- STEP 3: Dynamic Counter Computation ---
+    # Total = tracked registered passengers + temporary unregistered faces in this frame
+    presence_counter = len(last_seen_time) + unknown_count_in_frame
 
     return frame
 
