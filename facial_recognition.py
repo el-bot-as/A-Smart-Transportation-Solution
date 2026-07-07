@@ -19,7 +19,7 @@ picam2.start()
 cv_scaler = 4
 DISTANCE_THRESHOLD = 0.45  # Lower = stricter match required
 ABSENCE_THRESHOLD  = 1.0   # Seconds gap with no detection = face left the frame
-COOLDOWN_SECONDS   = 10    # If absent >= 10s and returns → decrease counter
+COOLDOWN_SECONDS   = 10    # If absent >= 10s and returns = decrease counter
 
 face_locations     = []
 face_encodings_list = []
@@ -35,9 +35,6 @@ presence_counter = 0
 # Updated every frame they are visible; gap between frames reveals when they left
 last_seen_time = {}
 
-# has_been_counted — names that have already triggered a counter increment
-# A person is counted UP only once, ever (first appearance)
-has_been_counted = set()
 
 
 def process_frame(frame):
