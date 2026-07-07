@@ -39,13 +39,11 @@ last_seen_time = {}
 # A person is counted UP only once, ever (first appearance)
 has_been_counted = set()
 
-
 def process_frame(frame):
     """Detect faces, match names, update counter with correct logic."""
-    global face_locations, face_encodings_list, face_names, presence_counter
+    global face_locations, face_encodings_list, face_names, presence_counter, last_seen_time
 
     resized_frame = cv2.resize(frame, (0, 0), fx=(1/cv_scaler), fy=(1/cv_scaler))
-    # frame is RGB888 — face_recognition expects RGB, no conversion needed
     face_locations = face_recognition.face_locations(resized_frame)
     face_encodings_list = face_recognition.face_encodings(
         resized_frame, face_locations, model='large'
@@ -53,7 +51,9 @@ def process_frame(frame):
 
     face_names = []
     now = time.time()
+    current_frame_seen_names = set()
 
+    # --- STEP 1: Detect and handle boardings ---
     for face_encoding in face_encodings_list:
         name = "Unknown"
 
@@ -63,28 +63,33 @@ def process_frame(frame):
 
             if face_distances[best_match_index] < DISTANCE_THRESHOLD:
                 name = known_face_names[best_match_index]
-                last_seen = last_seen_time.get(name, None)
+                current_frame_seen_names.add(name)
 
-                if last_seen is None:
-                    # Very first time this person has ever appeared — count UP (once only)
+                # If they are not currently marked as on board, they just boarded!
+                if name not in last_seen_time:
                     presence_counter += 1
-                    has_been_counted.add(name)
-                else:
-                    time_absent = now - last_seen
-
-                    if time_absent >= ABSENCE_THRESHOLD:
-                        # Face was genuinely gone and just came back
-                        if time_absent >= COOLDOWN_SECONDS:
-                            # Was absent long enough (>= 20s) — decrease counter
-                            presence_counter = max(0, presence_counter - 1)
-                        # else: came back within 20s — do nothing (ignore brief exits)
-
-                    # else: face was continuously in frame — do nothing
-
-                # Always update last_seen every frame they are visible
+                    print(f"[BOARDING] {name} entered. Passengers: {presence_counter}")
+                
+                # Update their timestamp keeping them alive on board
                 last_seen_time[name] = now
 
         face_names.append(name)
+
+    # --- STEP 2: Independent check for exits ---
+    # We create a list of people who have been gone longer than the cooldown
+    passengers_who_left = []
+    for name, last_time in last_seen_time.items():
+        # If they aren't in the current frame, check how long they've been missing
+        if name not in current_frame_seen_names:
+            time_absent = now - last_time
+            if time_absent >= COOLDOWN_SECONDS:
+                passengers_who_left.append(name)
+
+    # Remove those who left from our active tracking and decrement the counter
+    for name in passengers_who_left:
+        del last_seen_time[name]
+        presence_counter = max(0, presence_counter - 1)
+        print(f"[EXIT] {name} left the vehicle. Passengers: {presence_counter}")
 
     return frame
 
